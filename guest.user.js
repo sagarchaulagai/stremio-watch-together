@@ -3,7 +3,7 @@
 // @namespace    https://stremio.com
 // @version      1.0
 // @description  Watch Together Guest Script for Stremio Web Player
-// @author       Your Name
+// @author       Sagar Chaulagain
 // @match        https://web.stremio.com/*
 // @match        https://web.stremio.com/
 // @match        https://web.stremio.com/#*
@@ -41,14 +41,14 @@
     
     // Default Firebase Configuration
     const DEFAULT_FIREBASE_CONFIG = {
-        apiKey: "apiKey-0",
-        authDomain: "authDomain-0",
-        projectId: "projectId-0",
-        storageBucket: "storageBucket-0",
-        messagingSenderId: "messagingSenderId-0",
-        appId: "appId-0",
-        measurementId: "measurementId-0",
-        databaseURL: "databaseURL-0"
+        apiKey: "apiKey",
+        authDomain: "authDomain",
+        projectId: "projectId",
+        storageBucket: "storageBucket",
+        messagingSenderId: "messagingSenderId",
+        appId: "appId",
+        measurementId: "measurementId",
+        databaseURL: "databaseURL"
     };
     
     let firebaseConfig = { ...DEFAULT_FIREBASE_CONFIG };
@@ -97,6 +97,90 @@
             console.error('❌ GUEST: Failed to clear configuration:', error);
         }
     }
+
+    // Check if Firebase config is properly configured
+    function isFirebaseConfigValid() {
+        const requiredFields = ['apiKey', 'authDomain', 'projectId', 'databaseURL'];
+        for (const field of requiredFields) {
+            if (!firebaseConfig[field] || 
+                firebaseConfig[field] === field || 
+                firebaseConfig[field].includes('YOUR') ||
+                firebaseConfig[field].includes('placeholder')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Show Firebase configuration required message
+    function showFirebaseConfigRequired() {
+        // Create a prominent message overlay
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            color: white;
+            font-family: Arial, sans-serif;
+        `;
+        
+        overlay.innerHTML = `
+            <div style="text-align: center; max-width: 500px; padding: 40px; background: rgba(76, 175, 80, 0.1); border: 2px solid #4CAF50; border-radius: 10px;">
+                <h2 style="color: #4CAF50; margin: 0 0 20px 0;">🔧 Firebase Configuration Required</h2>
+                <p style="font-size: 1.1em; margin: 0 0 20px 0; line-height: 1.5;">
+                    To use Watch Together, you need to configure your Firebase settings first.
+                </p>
+                <p style="margin: 0 0 30px 0; opacity: 0.9;">
+                    Click the settings button (gear icon) next to the Watch Together button to configure Firebase.
+                </p>
+                <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
+                    <button id="openSettings" style="
+                        background: #4CAF50;
+                        color: white;
+                        border: none;
+                        padding: 12px 24px;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-size: 1em;
+                        font-weight: bold;
+                    ">Open Settings</button>
+                    <button id="closeMessage" style="
+                        background: #666;
+                        color: white;
+                        border: none;
+                        padding: 12px 24px;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-size: 1em;
+                    ">Close</button>
+                </div>
+                <div style="margin-top: 20px; font-size: 0.9em; opacity: 0.8;">
+                    <p>You'll need to create a Firebase project and get your configuration values.</p>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(overlay);
+        
+        // Add event listeners
+        document.getElementById('openSettings').addEventListener('click', () => {
+            overlay.remove();
+            showSettingsPopup();
+        });
+        
+        document.getElementById('closeMessage').addEventListener('click', () => {
+            overlay.remove();
+        });
+        
+        console.log('⚠️ GUEST: Firebase configuration required message displayed');
+    }
     
     // Global variables
     let app, database, roomRef;
@@ -115,6 +199,13 @@
 
     // Initialize Firebase
     async function initializeFirebase() {
+        // Check if Firebase config is valid
+        if (!isFirebaseConfigValid()) {
+            console.log('⚠️ GUEST: Firebase not configured. Please configure Firebase settings first.');
+            showFirebaseConfigRequired();
+            return false;
+        }
+
         try {
             const { initializeApp } = await import('https://www.gstatic.com/firebasejs/12.4.0/firebase-app.js');
             const { getDatabase, ref, update, onValue } = await import('https://www.gstatic.com/firebasejs/12.4.0/firebase-database.js');
@@ -448,6 +539,12 @@
 
     // Toggle Watch Together functionality
     function toggleWatchTogether() {
+        // Check if Firebase is configured
+        if (!isFirebaseConfigValid()) {
+            showFirebaseConfigRequired();
+            return;
+        }
+        
         watchTogetherEnabled = !watchTogetherEnabled;
         
         if (watchTogetherEnabled) {
@@ -955,8 +1052,9 @@
         
         const firebaseReady = await initializeFirebase();
         if (!firebaseReady) {
-            console.error('❌ Cannot proceed without Firebase');
-            return;
+            console.log('⚠️ GUEST: Firebase not configured - user needs to set up Firebase first');
+            // Don't return here, let the user configure Firebase through the settings
+            // The buttons will be created but Firebase won't be initialized until configured
         }
 
         // If on watch together redirect page, show redirect page and start listening for host
