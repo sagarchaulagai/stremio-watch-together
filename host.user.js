@@ -96,6 +96,31 @@
         }
     }
 
+    // Generate and save persistent display name
+    function initializeDisplayName() {
+        try {
+            const savedConfig = localStorage.getItem(CONFIG_STORAGE_KEY);
+            if (savedConfig) {
+                const config = JSON.parse(savedConfig);
+                if (config.displayName && config.displayName.trim() !== '') {
+                    DISPLAY_NAME = config.displayName;
+                    console.log('HOST: Loaded display name:', DISPLAY_NAME);
+                    return;
+                }
+            }
+            
+            // Generate new username only if none exists
+            if (!DISPLAY_NAME || DISPLAY_NAME.trim() === '') {
+                DISPLAY_NAME = generateCoolUsername('host_');
+                saveConfig();
+                console.log('HOST: Generated new display name:', DISPLAY_NAME);
+            }
+        } catch (error) {
+            console.error('HOST ERROR: Failed to initialize display name:', error);
+            DISPLAY_NAME = generateCoolUsername('host_');
+        }
+    }
+
     // Generate a cool username
     function generateCoolUsername(baseName = "user") {
         const adjectives = [
@@ -231,6 +256,9 @@
     let lastSentTime = 0;
     let guestStates = {};
     let isAnyGuestBuffering = false;
+    let currentControllerId = null;
+    let controlRequests = {};
+    let controlPanel = null;
 
     // Initialize Firebase
     async function initializeFirebase() {
@@ -269,15 +297,21 @@
                 videoURL: videoURL,
                 host: {
                     userId: USER_ID,
-                    displayName: DISPLAY_NAME || generateCoolUsername('host_'),
+                    displayName: DISPLAY_NAME,
                     currentTime: 0,
                     isPlaying: false,
                     isBuffering: false,
                     lastUpdated: Date.now()
                 },
                 guests: {},
+                permissions: {
+                    controllerId: USER_ID  // Host starts with control
+                },
                 status: 'waiting_for_guests'
             });
+
+            // Initialize current controller
+            currentControllerId = USER_ID;
 
             console.log('HOST: Room initialized');
             return true;
@@ -353,6 +387,36 @@
         watchTogetherButton.addEventListener('click', toggleWatchTogether);
 
         console.log('HOST: Watch Together button created');
+    }
+
+    // Create Control Panel toggle button
+    function createControlPanelButton() {
+        const existingButton = document.querySelector('.control-panel-toggle-button');
+        if (existingButton) {
+            existingButton.remove();
+        }
+
+        const panelButton = document.createElement('div');
+        panelButton.className = 'control-bar-button-FQUsj button-container-zVLH6 control-panel-toggle-button';
+        panelButton.title = 'Control Panel';
+        panelButton.style.cssText = `
+            cursor: pointer;
+            border: 2px solid #9C27B0;
+            border-radius: 4px;
+            background: rgba(156, 39, 176, 0.1);
+            margin-left: 5px;
+        `;
+
+        panelButton.innerHTML = `
+            <svg class="icon-qy6I6" viewBox="0 0 24 24" style="width:24px;height:24px;">
+                <path d="M12 2l-5.5 9h11L12 2zm0 3.84L13.93 9h-3.87L12 5.84zM17.5 13c-2.49 0-4.5 2.01-4.5 4.5s2.01 4.5 4.5 4.5 4.5-2.01 4.5-4.5-2.01-4.5-4.5-4.5zm0 7c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5zM3 21.5h8v-8H3v8zm2-6h4v4H5v-4z" fill="currentColor"/>
+            </svg>
+        `;
+
+        controlBar.appendChild(panelButton);
+        panelButton.addEventListener('click', toggleControlPanel);
+
+        console.log('HOST: Control panel button created');
     }
 
     // Create Settings button
@@ -1106,6 +1170,55 @@
         }
     }
 
+    // Get controller state from Firebase data
+    function getControllerState(data) {
+        if (!data || !data.permissions || !data.permissions.controllerId) {
+            return null;
+        }
+        
+        const controllerId = data.permissions.controllerId;
+        
+        // Check if host has control
+        if (data.host && data.host.userId === controllerId) {
+            return data.host;
+        }
+        
+        // Check if a guest has control
+        if (data.guests && data.guests[controllerId]) {
+            return data.guests[controllerId];
+        }
+        
+        return null;
+    }
+
+    // Apply controller state to host's video
+    function applyControllerState(controllerState) {
+        if (!watchTogetherEnabled || !videoElement || !controllerState) return;
+        
+        console.log('HOST: Applying controller state:', controllerState);
+        
+        const currentTime = getCurrentTime();
+        const timeDiff = Math.abs(currentTime - (controllerState.currentTime || 0));
+        const localIsPlaying = getPlayState();
+        
+        // Sync time if difference is more than 3 seconds
+        if (timeDiff > 3 && controllerState.currentTime !== undefined) {
+            console.log(`HOST: Syncing time to controller: ${controllerState.currentTime}s (was ${currentTime}s)`);
+            videoElement.currentTime = controllerState.currentTime;
+        }
+        
+        // Sync play/pause state
+        if (controllerState.isPlaying !== undefined) {
+            if (controllerState.isPlaying && !localIsPlaying) {
+                console.log('HOST: Controller playing - resuming video');
+                playPauseButton.click();
+            } else if (!controllerState.isPlaying && localIsPlaying) {
+                console.log('HOST: Controller paused - pausing video');
+                playPauseButton.click();
+            }
+        }
+    }
+
     // Send host state to Firebase
     async function sendHostState() {
         if (!watchTogetherEnabled || !roomRef) return;
@@ -1113,13 +1226,19 @@
         try {
             const { set, update } = await import('https://www.gstatic.com/firebasejs/12.4.0/firebase-database.js');
 
+            // Only send video control updates if we have the control token
+            if (currentControllerId !== USER_ID) {
+                console.log('HOST: Not sending state - control delegated to:', currentControllerId);
+                return;
+            }
+
             const currentTime = getCurrentTime();
             const isPlaying = getPlayState();
             const isCurrentlyBuffering = isVideoBuffering();
 
             const hostState = {
                 userId: USER_ID,
-                displayName: DISPLAY_NAME || generateCoolUsername('host_'),
+                displayName: DISPLAY_NAME,
                 currentTime: currentTime,
                 isPlaying: isPlaying,
                 isBuffering: isCurrentlyBuffering,
@@ -1150,6 +1269,8 @@
 
             onValue(roomRef, (snapshot) => {
                 const data = snapshot.val();
+                
+                // Handle guests
                 if (data && data.guests) {
                     const guestCount = Object.keys(data.guests).length;
                     console.log(`HOST: ${guestCount} guest(s) connected`);
@@ -1162,6 +1283,33 @@
 
                     // Show guest status in UI
                     showGuestStatus(guestCount);
+
+                    // Update control panel
+                    updateControlPanel();
+                }
+
+                // Update permissions
+                if (data && data.permissions) {
+                    if (data.permissions.controllerId) {
+                        currentControllerId = data.permissions.controllerId;
+                    }
+                    if (data.permissions.controlRequests) {
+                        controlRequests = data.permissions.controlRequests;
+                    } else {
+                        controlRequests = {};
+                    }
+
+                    // Update control panel
+                    updateControlPanel();
+                }
+
+                // Apply controller state if we don't have control
+                if (currentControllerId !== USER_ID) {
+                    const controllerState = getControllerState(data);
+                    if (controllerState) {
+                        console.log('HOST: Detected controller state change, applying:', controllerState);
+                        applyControllerState(controllerState);
+                    }
                 }
             });
 
@@ -1301,6 +1449,330 @@
         }
     }
 
+    // Show notification message
+    function showNotification(message, color = '#FF6B35') {
+        // Remove existing notification
+        const existingNotification = document.querySelector('.control-notification');
+        if (existingNotification) {
+            existingNotification.remove();
+        }
+
+        const notification = document.createElement('div');
+        notification.className = 'control-notification';
+        notification.style.cssText = `
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.95);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            z-index: 10001;
+            border: 2px solid ${color};
+            font-size: 14px;
+            font-weight: 600;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            animation: slideDown 0.3s ease;
+        `;
+        notification.innerHTML = `
+            <style>
+                @keyframes slideDown {
+                    from {
+                        transform: translateX(-50%) translateY(-20px);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(-50%) translateY(0);
+                        opacity: 1;
+                    }
+                }
+            </style>
+            ${message}
+        `;
+
+        document.body.appendChild(notification);
+
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 3000);
+    }
+
+    // Delegate control to a guest
+    async function delegateControl(guestUserId, guestName) {
+        if (!roomRef) return;
+
+        try {
+            const { update } = await import('https://www.gstatic.com/firebasejs/12.4.0/firebase-database.js');
+
+            await update(roomRef, {
+                'permissions/controllerId': guestUserId
+            });
+
+            currentControllerId = guestUserId;
+            showNotification(`Control delegated to ${guestName}`, '#4CAF50');
+            updateControlPanel();
+
+            console.log('HOST: Control delegated to', guestUserId);
+        } catch (error) {
+            console.error('HOST ERROR: Failed to delegate control:', error);
+            showNotification('Failed to delegate control', '#f44336');
+        }
+    }
+
+    // Take back control
+    async function takeBackControl() {
+        if (!roomRef) return;
+
+        try {
+            const { update } = await import('https://www.gstatic.com/firebasejs/12.4.0/firebase-database.js');
+
+            await update(roomRef, {
+                'permissions/controllerId': USER_ID,
+                'permissions/controlRequests': null
+            });
+
+            currentControllerId = USER_ID;
+            controlRequests = {};
+            showNotification('You now have control', '#FF6B35');
+            updateControlPanel();
+
+            console.log('HOST: Took back control');
+        } catch (error) {
+            console.error('HOST ERROR: Failed to take back control:', error);
+            showNotification('Failed to take back control', '#f44336');
+        }
+    }
+
+    // Approve control request from guest
+    async function approveControlRequest(guestUserId, guestName) {
+        if (!roomRef) return;
+
+        try {
+            const { update } = await import('https://www.gstatic.com/firebasejs/12.4.0/firebase-database.js');
+
+            await update(roomRef, {
+                'permissions/controllerId': guestUserId,
+                [`permissions/controlRequests/${guestUserId}`]: null
+            });
+
+            currentControllerId = guestUserId;
+            delete controlRequests[guestUserId];
+            showNotification(`Control granted to ${guestName}`, '#4CAF50');
+            updateControlPanel();
+
+            console.log('HOST: Approved control request from', guestUserId);
+        } catch (error) {
+            console.error('HOST ERROR: Failed to approve control request:', error);
+            showNotification('Failed to approve request', '#f44336');
+        }
+    }
+
+    // Deny control request from guest
+    async function denyControlRequest(guestUserId) {
+        if (!roomRef) return;
+
+        try {
+            const { update } = await import('https://www.gstatic.com/firebasejs/12.4.0/firebase-database.js');
+
+            await update(roomRef, {
+                [`permissions/controlRequests/${guestUserId}`]: null
+            });
+
+            delete controlRequests[guestUserId];
+            updateControlPanel();
+
+            console.log('HOST: Denied control request from', guestUserId);
+        } catch (error) {
+            console.error('HOST ERROR: Failed to deny control request:', error);
+        }
+    }
+
+    // Create control panel UI
+    function createControlPanel() {
+        if (controlPanel) {
+            controlPanel.remove();
+        }
+
+        controlPanel = document.createElement('div');
+        controlPanel.className = 'host-control-panel';
+        controlPanel.style.cssText = `
+            position: fixed;
+            top: 150px;
+            right: 20px;
+            width: 320px;
+            max-height: 500px;
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+            border: 2px solid #FF6B35;
+            border-radius: 12px;
+            padding: 0;
+            z-index: 9999;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+            display: none;
+        `;
+
+        updateControlPanel();
+
+        document.body.appendChild(controlPanel);
+        console.log('HOST: Control panel created');
+    }
+
+    // Update control panel content
+    function updateControlPanel() {
+        if (!controlPanel) return;
+
+        const guestCount = Object.keys(guestStates).length;
+        const requestCount = Object.keys(controlRequests).length;
+
+        let controllerName = 'You';
+        if (currentControllerId !== USER_ID) {
+            const controller = guestStates[currentControllerId];
+            controllerName = controller ? controller.displayName : 'Unknown';
+        }
+
+        let guestHTML = '';
+        for (const [guestId, guest] of Object.entries(guestStates)) {
+            if (!guest) continue;
+
+            const isController = currentControllerId === guestId;
+            const hasRequest = controlRequests[guestId];
+
+            guestHTML += `
+                <div style="padding: 12px; border-bottom: 1px solid #333; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="flex: 1; display: flex; align-items: center; gap: 8px;">
+                        ${isController ? '<span style="font-size: 16px;">👑</span>' : ''}
+                        <span style="font-weight: ${isController ? '600' : '400'}; color: ${isController ? '#4CAF50' : '#e0e0e0'};">
+                            ${guest.displayName || guestId}
+                        </span>
+                    </div>
+                    <div>
+                        ${!isController && !hasRequest ? `
+                            <button onclick="window.delegateControlToGuest('${guestId}', '${guest.displayName}')" 
+                                    style="padding: 6px 12px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                                Give Control
+                            </button>
+                        ` : ''}
+                        ${isController && currentControllerId !== USER_ID ? `
+                            <span style="color: #4CAF50; font-size: 11px; font-weight: 600;">CONTROLLING</span>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        let requestsHTML = '';
+        for (const [requesterId, request] of Object.entries(controlRequests)) {
+            if (!request) continue;
+
+            requestsHTML += `
+                <div style="padding: 12px; border-bottom: 1px solid #333; display: flex; align-items: center; justify-content: space-between; background: rgba(255, 152, 0, 0.1);">
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600; color: #ff9800; font-size: 13px;">${request.displayName || requesterId}</div>
+                        <div style="font-size: 11px; color: #aaa;">Requesting control</div>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                        <button onclick="window.approveControlRequestHandler('${requesterId}', '${request.displayName}')" 
+                                style="padding: 6px 12px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;">
+                            ✓
+                        </button>
+                        <button onclick="window.denyControlRequestHandler('${requesterId}')" 
+                                style="padding: 6px 12px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600;">
+                            ✗
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        controlPanel.innerHTML = `
+            <div style="background: linear-gradient(135deg, #FF6B35 0%, #ff8c42 100%); padding: 15px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <div style="font-weight: 600; font-size: 16px;">Control Panel</div>
+                    <div style="font-size: 12px; opacity: 0.9;">${guestCount} guest(s) connected</div>
+                </div>
+                <button onclick="window.toggleControlPanel()" style="background: transparent; border: none; color: white; font-size: 20px; cursor: pointer; padding: 0; width: 24px; height: 24px;">×</button>
+            </div>
+
+            <div style="padding: 15px; border-bottom: 2px solid #333;">
+                <div style="font-size: 13px; color: #aaa; margin-bottom: 8px;">Current Controller:</div>
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                    <span style="font-size: 20px;">👑</span>
+                    <span style="font-weight: 600; font-size: 15px; color: #4CAF50;">${controllerName}</span>
+                </div>
+                ${currentControllerId !== USER_ID ? `
+                    <button onclick="window.takeBackControlHandler()" style="width: 100%; padding: 10px; background: #FF6B35; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px;">
+                        Take Back Control
+                    </button>
+                ` : ''}
+            </div>
+
+            ${requestCount > 0 ? `
+                <div style="background: rgba(255, 152, 0, 0.05);">
+                    <div style="padding: 12px 15px; font-weight: 600; font-size: 13px; color: #ff9800; border-bottom: 1px solid #333;">
+                        Control Requests (${requestCount})
+                    </div>
+                    <div style="max-height: 150px; overflow-y: auto;">
+                        ${requestsHTML}
+                    </div>
+                </div>
+            ` : ''}
+
+            ${guestCount > 0 ? `
+                <div>
+                    <div style="padding: 12px 15px; font-weight: 600; font-size: 13px; color: #e0e0e0; border-bottom: 1px solid #333;">
+                        Connected Guests
+                    </div>
+                    <div style="max-height: 200px; overflow-y: auto;">
+                        ${guestHTML || '<div style="padding: 15px; text-align: center; color: #aaa; font-size: 13px;">No guests connected</div>'}
+                    </div>
+                </div>
+            ` : `
+                <div style="padding: 20px; text-align: center; color: #aaa; font-size: 13px;">
+                    No guests connected yet
+                </div>
+            `}
+        `;
+
+        console.log('HOST: Control panel updated');
+    }
+
+    // Toggle control panel visibility
+    function toggleControlPanel() {
+        if (!controlPanel) return;
+
+        if (controlPanel.style.display === 'none') {
+            controlPanel.style.display = 'block';
+        } else {
+            controlPanel.style.display = 'none';
+        }
+    }
+
+    // Show control panel
+    function showControlPanel() {
+        if (controlPanel) {
+            controlPanel.style.display = 'block';
+        }
+    }
+
+    // Hide control panel
+    function hideControlPanel() {
+        if (controlPanel) {
+            controlPanel.style.display = 'none';
+        }
+    }
+
+    // Global handlers for control panel buttons
+    window.delegateControlToGuest = delegateControl;
+    window.takeBackControlHandler = takeBackControl;
+    window.approveControlRequestHandler = approveControlRequest;
+    window.denyControlRequestHandler = denyControlRequest;
+    window.toggleControlPanel = toggleControlPanel;
+
     // Show guest status in control bar
     function showGuestStatus(guestCount) {
         // Remove existing status
@@ -1413,10 +1885,14 @@
         if (bufferingObserver) bufferingObserver.disconnect();
         if (watchTogetherButton) watchTogetherButton.remove();
         if (settingsButton) settingsButton.remove();
+        if (controlPanel) controlPanel.remove();
         hideSettingsPopup();
 
         const existingStatus = document.querySelector('.guest-status-display');
         if (existingStatus) existingStatus.remove();
+
+        const controlPanelButton = document.querySelector('.control-panel-toggle-button');
+        if (controlPanelButton) controlPanelButton.remove();
 
         hideGuestBufferingStatus();
         hideGuestBufferingIcon();
@@ -1426,6 +1902,9 @@
     async function initialize() {
         // Load saved configuration first
         loadConfig();
+
+        // Initialize display name (generate if needed, or load saved)
+        initializeDisplayName();
 
         console.log(`HOST User ID: ${USER_ID}`);
         console.log(`Room ID: ${ROOM_ID}`);
@@ -1489,7 +1968,9 @@
         }
 
         createWatchTogetherButton();
+        createControlPanelButton();
         createSettingsButton();
+        createControlPanel();
         setupObservers();
         startGuestListener();
 

@@ -104,6 +104,31 @@
         }
     }
 
+    // Generate and save persistent display name
+    function initializeDisplayName() {
+        try {
+            const savedConfig = localStorage.getItem(CONFIG_STORAGE_KEY);
+            if (savedConfig) {
+                const config = JSON.parse(savedConfig);
+                if (config.displayName && config.displayName.trim() !== '') {
+                    DISPLAY_NAME = config.displayName;
+                    console.log('GUEST: Loaded display name:', DISPLAY_NAME);
+                    return;
+                }
+            }
+            
+            // Generate new username only if none exists
+            if (!DISPLAY_NAME || DISPLAY_NAME.trim() === '') {
+                DISPLAY_NAME = generateCoolUsername('guest_');
+                saveConfig();
+                console.log('GUEST: Generated new display name:', DISPLAY_NAME);
+            }
+        } catch (error) {
+            console.error('GUEST ERROR: Failed to initialize display name:', error);
+            DISPLAY_NAME = generateCoolUsername('guest_');
+        }
+    }
+
     // Generate a cool username
     function generateCoolUsername(baseName = "user") {
         const adjectives = [
@@ -237,6 +262,8 @@
     let bufferingObserver = null;
     let isGuestBuffering = false;
     let lastGuestStateSent = 0;
+    let currentControllerId = null;
+    let requestControlButton = null;
 
     // Initialize Firebase
     async function initializeFirebase() {
@@ -270,7 +297,7 @@
             await update(roomRef, {
                 ['guests/' + USER_ID]: {
                     userId: USER_ID,
-                    displayName: DISPLAY_NAME || generateCoolUsername('guest_'),
+                    displayName: DISPLAY_NAME,
                     connected: true,
                     lastSeen: Date.now()
                 }
@@ -350,6 +377,90 @@
         watchTogetherButton.addEventListener('click', toggleWatchTogether);
 
         console.log('GUEST: Watch Together button created');
+    }
+
+    // Create Request Control button
+    function createRequestControlButton() {
+        if (requestControlButton) {
+            requestControlButton.remove();
+        }
+
+        requestControlButton = document.createElement('div');
+        requestControlButton.className = 'control-bar-button-FQUsj button-container-zVLH6 request-control-button';
+        requestControlButton.title = 'Request Control';
+        requestControlButton.style.cssText = `
+            cursor: pointer;
+            border: 2px solid #9C27B0;
+            border-radius: 8px;
+            background: linear-gradient(135deg, rgba(156, 39, 176, 0.15) 0%, rgba(156, 39, 176, 0.25) 100%);
+            margin-left: 5px;
+            display: flex;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 2px 8px rgba(156, 39, 176, 0.2);
+            backdrop-filter: blur(10px);
+            justify-content: center;
+            align-items: center;
+        `;
+
+        // Add hover and active states
+        const style = document.createElement('style');
+        style.textContent = `
+            .request-control-button:hover {
+                border-color: #E91E63 !important;
+                background: linear-gradient(135deg, rgba(233, 30, 99, 0.2) 0%, rgba(233, 30, 99, 0.35) 100%) !important;
+                box-shadow: 0 4px 16px rgba(233, 30, 99, 0.4) !important;
+                transform: translateY(-1px) !important;
+            }
+            .request-control-button:active {
+                transform: translateY(0px) scale(0.98) !important;
+                box-shadow: 0 2px 8px rgba(156, 39, 176, 0.3) !important;
+            }
+            .request-control-button::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: -100%;
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+                transition: left 0.6s;
+            }
+            .request-control-button:hover::before {
+                left: 100%;
+            }
+        `;
+        document.head.appendChild(style);
+
+        requestControlButton.innerHTML = `
+            <svg viewBox="0 0 24 24" style="width:24px;height:24px;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.3));">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.94-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" fill="white"/>
+            </svg>
+        `;
+
+
+        controlBar.appendChild(requestControlButton);
+        requestControlButton.addEventListener('click', requestControl);
+
+        console.log('GUEST: Request Control button created');
+    }
+
+    // Update Request Control button state
+    function updateRequestControlButton() {
+        if (!requestControlButton) return;
+
+        if (currentControllerId === USER_ID) {
+            // We have control - hide the button
+            requestControlButton.style.display = 'none';
+            requestControlButton.title = 'You have control';
+        } else if (watchTogetherEnabled) {
+            // Show button when not controlling
+            requestControlButton.style.display = 'flex';
+            requestControlButton.title = 'Request Control';
+        } else {
+            requestControlButton.style.display = 'none';
+        }
     }
 
     // Create Settings button
@@ -1003,11 +1114,13 @@
             watchTogetherButton.style.opacity = '1';
             console.log('GUEST: Watch Together ENABLED - Following host');
             startFollowingHost();
+            updateRequestControlButton();
         } else {
             watchTogetherButton.style.backgroundColor = '';
             watchTogetherButton.style.opacity = '0.7';
             console.log('GUEST: Watch Together DISABLED');
             stopFollowingHost();
+            updateRequestControlButton();
         }
     }
 
@@ -1173,17 +1286,44 @@
         console.log('GUEST: Watch Together redirect page displayed');
     }
 
+    // Get controller state from Firebase data
+    function getControllerState(data) {
+        if (!data || !data.permissions || !data.permissions.controllerId) {
+            return null;
+        }
+        
+        const controllerId = data.permissions.controllerId;
+        
+        // Check if host has control
+        if (data.host && data.host.userId === controllerId) {
+            return data.host;
+        }
+        
+        // Check if a guest has control
+        if (data.guests && data.guests[controllerId]) {
+            return data.guests[controllerId];
+        }
+        
+        return null;
+    }
+
     // Apply host's state to guest's video
     function applyHostState(hostState) {
         if (!watchTogetherEnabled || !videoElement || !hostState) return;
 
-        console.log('GUEST: Applying host state:', hostState);
+        // If we have control, don't apply host state
+        if (currentControllerId === USER_ID) {
+            console.log('GUEST: Ignoring controller state - we have control');
+            return;
+        }
+
+        console.log('GUEST: Applying controller state:', hostState);
 
         const timeDiff = Math.abs(getCurrentTime() - hostState.currentTime);
         const localIsPlaying = getPlayState();
 
         // Sync time if difference is more than 3 seconds
-        if (timeDiff > 3) {
+        if (timeDiff > 3 && hostState.currentTime !== undefined) {
             console.log(`GUEST: Syncing time: local=${getCurrentTime()}s, host=${hostState.currentTime}s`);
             videoElement.currentTime = hostState.currentTime;
         }
@@ -1194,7 +1334,7 @@
             if (localIsPlaying) {
                 playPauseButton.click();
             }
-            showHostStatus('Host is buffering...');
+            showHostStatus('Controller is buffering...');
             showHostBufferingIcon();
         } else if (hostState.isPlaying && !localIsPlaying) {
             // Host is playing - resume guest video
@@ -1302,6 +1442,83 @@
         }
     }
 
+    // Show notification message
+    function showNotification(message, color = '#4CAF50') {
+        // Remove existing notification
+        const existingNotification = document.querySelector('.control-notification');
+        if (existingNotification) {
+            existingNotification.remove();
+        }
+
+        const notification = document.createElement('div');
+        notification.className = 'control-notification';
+        notification.style.cssText = `
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.95);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            z-index: 10001;
+            border: 2px solid ${color};
+            font-size: 14px;
+            font-weight: 600;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            animation: slideDown 0.3s ease;
+        `;
+        notification.innerHTML = `
+            <style>
+                @keyframes slideDown {
+                    from {
+                        transform: translateX(-50%) translateY(-20px);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(-50%) translateY(0);
+                        opacity: 1;
+                    }
+                }
+            </style>
+            ${message}
+        `;
+
+        document.body.appendChild(notification);
+
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 3000);
+    }
+
+    // Request control from host
+    async function requestControl() {
+        if (!roomRef) return;
+
+        try {
+            const { update } = await import('https://www.gstatic.com/firebasejs/12.4.0/firebase-database.js');
+
+            await update(roomRef, {
+                [`permissions/controlRequests/${USER_ID}`]: {
+                    userId: USER_ID,
+                    displayName: DISPLAY_NAME,
+                    requestedAt: Date.now()
+                }
+            });
+
+            showNotification('Control requested - waiting for host approval', '#ff9800');
+            console.log('GUEST: Control requested from host');
+
+            // Update button state
+            updateRequestControlButton();
+        } catch (error) {
+            console.error('GUEST ERROR: Failed to request control:', error);
+            showNotification('Failed to request control', '#f44336');
+        }
+    }
+
     // Listen for host state changes
     async function startHostListener() {
         try {
@@ -1309,8 +1526,27 @@
 
             onValue(roomRef, (snapshot) => {
                 const data = snapshot.val();
+                
+                // Update permissions
+                if (data && data.permissions) {
+                    const previousControllerId = currentControllerId;
+                    currentControllerId = data.permissions.controllerId;
+
+                    // Notify if control changed
+                    if (previousControllerId !== currentControllerId && previousControllerId !== null) {
+                        if (currentControllerId === USER_ID) {
+                            showNotification('You now have control!', '#4CAF50');
+                        } else {
+                            showNotification('Control returned to host', '#FF6B35');
+                        }
+                    }
+
+                    // Update UI
+                    updateRequestControlButton();
+                }
+
                 if (data && data.host && data.status === 'active') {
-                    console.log('GUEST: Received host state update');
+                    console.log('GUEST: Received room state update');
 
                     // Check if we need to redirect to host's video
                     if (isOnWatchTogetherPageCheck && data.videoURL && isValidStremioVideoURL(data.videoURL)) {
@@ -1318,7 +1554,14 @@
                         return;
                     }
 
-                    applyHostState(data.host);
+                    // Apply state from whoever has the control token
+                    const controllerState = getControllerState(data);
+                    if (controllerState) {
+                        console.log('GUEST: Applying state from controller:', data.permissions.controllerId);
+                        applyHostState(controllerState);
+                    } else {
+                        console.log('GUEST: No controller state found');
+                    }
                 } else if (data && data.status === 'waiting_for_guests') {
                     console.log('GUEST: Waiting for host to start...');
                     showHostStatus('Waiting for host to start...');
@@ -1342,15 +1585,24 @@
             const isPlaying = getPlayState();
             const isCurrentlyBuffering = isVideoBuffering();
 
+            // If we have control, send full state including video control
+            // If not, only send status info
             const guestState = {
                 userId: USER_ID,
-                displayName: DISPLAY_NAME || generateCoolUsername('guest_'),
-                currentTime: currentTime,
-                isPlaying: isPlaying,
+                displayName: DISPLAY_NAME,
                 isBuffering: isCurrentlyBuffering,
                 lastUpdated: Date.now(),
                 connected: true
             };
+
+            // Only send video control commands if we have the control token
+            if (currentControllerId === USER_ID) {
+                guestState.currentTime = currentTime;
+                guestState.isPlaying = isPlaying;
+                console.log('GUEST: Sending control state:', {currentTime, isPlaying, isBuffering: isCurrentlyBuffering});
+            } else {
+                console.log('GUEST: Sending status only (no control):', {isBuffering: isCurrentlyBuffering});
+            }
 
             await update(roomRef, {
                 ['guests/' + USER_ID]: guestState
@@ -1373,7 +1625,7 @@
             await update(roomRef, {
                 ['guests/' + USER_ID]: {
                     userId: USER_ID,
-                    displayName: DISPLAY_NAME || generateCoolUsername('guest_'),
+                    displayName: DISPLAY_NAME,
                     connected: true,
                     lastSeen: Date.now()
                 }
@@ -1455,6 +1707,7 @@
     // Cleanup function
     function cleanup() {
         if (watchTogetherButton) watchTogetherButton.remove();
+        if (requestControlButton) requestControlButton.remove();
         if (settingsButton) settingsButton.remove();
         hideSettingsPopup();
         hideHostStatus();
@@ -1492,6 +1745,9 @@
     async function initialize() {
         // Load saved configuration first
         loadConfig();
+
+        // Initialize display name (generate if needed, or load saved)
+        initializeDisplayName();
 
         // Check if room ID is provided in URL
         const roomFromURL = getRoomIdFromURL();
@@ -1569,6 +1825,7 @@
         }
 
         createWatchTogetherButton();
+        createRequestControlButton();
         createSettingsButton();
         startHostListener();
 
