@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stremio Watch Together - Host
 // @namespace    https://stremio.com
-// @version      1.0.1
+// @version      1.0.2
 // @description  Watch Together Host Script for Stremio Web Player
 // @author       Sagar Chaulagain
 // @updateURL    https://github.com/sagarchaulagai/stremio-watch-together/raw/refs/heads/master/host.user.js
