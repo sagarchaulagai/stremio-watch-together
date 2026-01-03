@@ -16,11 +16,11 @@
 (function() {
     'use strict';
 
-    // Check if we're on the player page
-    if (!window.location.hash.includes('#/player/')) {
-        console.log('HOST: Not on player page, skipping script');
-        return;
-    }
+    // Check if we're on the player page - Logic moved to URL monitoring loop
+    // if (!window.location.hash.includes('#/player/')) {
+    //    console.log('HOST: Not on player page, skipping script');
+    //    return;
+    // }
 
     console.log('HOST: Watch Together Script Loading...');
 
@@ -259,6 +259,8 @@
     let currentControllerId = null;
     let controlRequests = {};
     let controlPanel = null;
+    let isScriptActive = false;
+    let isInitializationRunning = false;
 
     // Initialize Firebase
     async function initializeFirebase() {
@@ -1896,6 +1898,9 @@
 
         hideGuestBufferingStatus();
         hideGuestBufferingIcon();
+        
+        isScriptActive = false;
+        console.log('HOST: Cleanup complete');
     }
 
     // Main initialization
@@ -2055,7 +2060,56 @@
     }
 
     // Start initialization
-    startInitialization().catch(error => {
-        console.error('HOST ERROR: Initialization failed:', error);
+    // Start initialization
+    // startInitialization().catch(error => {
+    //     console.error('HOST ERROR: Initialization failed:', error);
+    // });
+
+    // URL Change Detection and Lifecycle Management
+    let lastUrl = window.location.href;
+
+    async function checkUrlAndManageState() {
+        const currentUrl = window.location.href;
+        const isPlayerPage = currentUrl.includes('#/player/');
+        
+        if (isPlayerPage) {
+            if (!isScriptActive && !isInitializationRunning) {
+                console.log('HOST: Player page detected, initializing Watch Together...');
+                isInitializationRunning = true;
+                
+                try {
+                    // Start initialization flow
+                    await startInitialization(); // This calls initialize() which sets up everything
+                    isScriptActive = true;
+                } catch (error) {
+                    console.error('HOST ERROR: Failed to initialize:', error);
+                    // Reset flags so we can retry if needed
+                    isScriptActive = false;
+                } finally {
+                    isInitializationRunning = false;
+                }
+            }
+        } else {
+            if (isScriptActive) {
+                console.log('HOST: Left player page, cleaning up...');
+                cleanup();
+                // isScriptActive is set to false in cleanup(), but ensuring it here too
+                isScriptActive = false;
+            }
+        }
+        
+        lastUrl = currentUrl;
+    }
+
+    // Interval to check for URL changes (robust for SPA)
+    // Check every 1 second
+    setInterval(checkUrlAndManageState, 1000);
+
+    // Initial check
+    checkUrlAndManageState();
+    
+    // Also listen for popstate just in case
+    window.addEventListener('popstate', () => {
+        setTimeout(checkUrlAndManageState, 100);
     });
 })();

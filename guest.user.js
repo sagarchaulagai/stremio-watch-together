@@ -17,17 +17,14 @@
     'use strict';
 
     // Check if we're on the player page or watch together redirect page
-    const isOnPlayerPage = window.location.hash.includes('#/player/');
-    const isOnWatchTogetherPageCheck = window.location.pathname.includes('/watchtogether') ||
-                                       window.location.hash.includes('#/watchtogether');
-
-    if (!isOnPlayerPage && !isOnWatchTogetherPageCheck) {
-        console.log('GUEST: Not on player page or watch together page, skipping script');
-        return;
+    // Check for page type - Moved to dynamic checks
+    function isPlayerPage() {
+        return window.location.hash.includes('#/player/');
     }
 
-    if (isOnWatchTogetherPageCheck) {
-        console.log('GUEST: On watch together redirect page');
+    function isWatchTogetherPage() {
+        return window.location.pathname.includes('/watchtogether') ||
+               window.location.hash.includes('#/watchtogether');
     }
 
     console.log('GUEST: Watch Together Script Loading...');
@@ -264,6 +261,8 @@
     let lastGuestStateSent = 0;
     let currentControllerId = null;
     let requestControlButton = null;
+    let isScriptActive = false;
+    let isInitializationRunning = false;
 
     // Initialize Firebase
     async function initializeFirebase() {
@@ -1549,7 +1548,7 @@
                     console.log('GUEST: Received room state update');
 
                     // Check if we need to redirect to host's video
-                    if (isOnWatchTogetherPageCheck && data.videoURL && isValidStremioVideoURL(data.videoURL)) {
+                    if (isWatchTogetherPage() && data.videoURL && isValidStremioVideoURL(data.videoURL)) {
                         redirectToHostVideo(data.videoURL);
                         return;
                     }
@@ -1728,6 +1727,9 @@
                 });
             });
         }
+        
+        isScriptActive = false;
+        console.log('GUEST: Cleanup complete');
     }
 
     // Get room ID from URL parameters
@@ -1767,7 +1769,7 @@
         }
 
         // If on watch together redirect page, show redirect page and start listening for host
-        if (isOnWatchTogetherPageCheck) {
+        if (isWatchTogetherPage()) {
             console.log('GUEST: On redirect page - showing redirect interface');
             showWatchTogetherRedirectPage();
             startHostListener();
@@ -1865,7 +1867,61 @@
     }
 
     // Start initialization
-    startInitialization().catch(error => {
-        console.error('GUEST ERROR: Initialization failed:', error);
+    // Start initialization
+    // startInitialization().catch(error => {
+    //     console.error('GUEST ERROR: Initialization failed:', error);
+    // });
+
+    // URL Change Detection and Lifecycle Management
+    let lastUrl = window.location.href;
+
+    async function checkUrlAndManageState() {
+        const currentUrl = window.location.href;
+        const onPlayer = isPlayerPage();
+        const onWatchTogether = isWatchTogetherPage();
+        
+        if (onPlayer || onWatchTogether) {
+            if (!isScriptActive && !isInitializationRunning) {
+                console.log('GUEST: Relevant page detected, initializing Watch Together...');
+                if (onWatchTogether) {
+                    console.log('GUEST: On watch together redirect page');
+                }
+                
+                isInitializationRunning = true;
+                
+                try {
+                    // Start initialization flow
+                    await startInitialization(); // This calls initialize() which sets up everything
+                    isScriptActive = true;
+                } catch (error) {
+                    console.error('GUEST ERROR: Failed to initialize:', error);
+                    // Reset flags so we can retry if needed
+                    isScriptActive = false;
+                } finally {
+                    isInitializationRunning = false;
+                }
+            }
+        } else {
+            if (isScriptActive) {
+                console.log('GUEST: Left relevant page, cleaning up...');
+                cleanup();
+                // isScriptActive is set to false in cleanup(), but ensuring it here too
+                isScriptActive = false;
+            }
+        }
+        
+        lastUrl = currentUrl;
+    }
+
+    // Interval to check for URL changes (robust for SPA)
+    // Check every 1 second
+    setInterval(checkUrlAndManageState, 1000);
+
+    // Initial check
+    checkUrlAndManageState();
+    
+    // Also listen for popstate just in case
+    window.addEventListener('popstate', () => {
+        setTimeout(checkUrlAndManageState, 100);
     });
 })();
